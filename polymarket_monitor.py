@@ -245,7 +245,7 @@ class PolymarketMonitor:
                 sell_price = self.get_market_price(asset_id, 'sell')
                 
                 if self.debug_mode:
-                    print(f"Asset {asset_id[-20:]}: sell_price={sell_price}")
+                    print(f"Asset ...{asset_id[-10:]}: sell_price={sell_price}")
                 
                 # Use sell price if it's a real market price (not fallback)
                 if sell_price != 0.5:
@@ -311,7 +311,9 @@ class PolymarketMonitor:
             
             # Show asset IDs in debug mode
             if self.debug_mode and 'asset_ids' in pos and pos['asset_ids']:
-                asset_info = ', '.join(pos['asset_ids'][:2])  # Show first 2 asset IDs
+                # Show only last 8 characters of first 2 asset IDs
+                short_assets = [f"...{asset_id[-8:]}" for asset_id in list(pos['asset_ids'])[:2]]
+                asset_info = ', '.join(short_assets)
                 if len(pos['asset_ids']) > 2:
                     asset_info += f" +{len(pos['asset_ids'])-2} more"
                 lines.append(f"{'':15} Assets: {asset_info}")
@@ -336,26 +338,55 @@ class PolymarketMonitor:
         
         return "\n".join(lines)
     
-    def get_market_choices(self, activities: List[Dict]) -> Dict[str, int]:
-        """Get all unique markets from activities with their activity counts"""
-        market_counts = {}
+    def get_market_choices(self, activities: List[Dict]) -> Dict[str, Dict]:
+        """Get all unique markets from activities with their activity counts and most recent timestamps"""
+        market_data = {}
         for activity in activities:
             title = activity.get('title', '').strip()
             if title:
-                market_counts[title] = market_counts.get(title, 0) + 1
-        return market_counts
-    
-    def prompt_market_selection(self, market_counts: Dict[str, int]) -> str:
-        """Prompt user to select which market to monitor"""
-        # Sort markets by activity count (most active first)
-        markets = sorted(market_counts.keys(), key=lambda x: market_counts[x], reverse=True)
+                timestamp = activity.get('timestamp', 0)
+                # Convert timestamp if it's a string
+                if isinstance(timestamp, str):
+                    try:
+                        from datetime import datetime
+                        timestamp = datetime.fromisoformat(timestamp.replace('Z', '+00:00')).timestamp()
+                    except:
+                        timestamp = 0
+                
+                if title not in market_data:
+                    market_data[title] = {'count': 0, 'latest_timestamp': timestamp}
+                
+                market_data[title]['count'] += 1
+                # Keep track of the most recent timestamp
+                if timestamp > market_data[title]['latest_timestamp']:
+                    market_data[title]['latest_timestamp'] = timestamp
         
-        print(f"\n🎯 Found {len(markets)} different markets (ranked by activity):")
+        return market_data
+    
+    def prompt_market_selection(self, market_data: Dict[str, Dict]) -> str:
+        """Prompt user to select which market to monitor"""
+        # Sort markets by most recent activity timestamp (most recent first)
+        markets = sorted(market_data.keys(), key=lambda x: market_data[x]['latest_timestamp'], reverse=True)
+        
+        print(f"\n🎯 Found {len(markets)} different markets (ranked by most recent activity):")
         print("=" * 60)
         
         for i, market in enumerate(markets, 1):
-            count = market_counts[market]
-            print(f"{i:>2}. {market} ({count} activities)")
+            count = market_data[market]['count']
+            timestamp = market_data[market]['latest_timestamp']
+            
+            # Format the timestamp for display
+            if timestamp > 0:
+                from datetime import datetime
+                try:
+                    dt = datetime.fromtimestamp(timestamp)
+                    time_str = dt.strftime("%m/%d %H:%M")
+                except:
+                    time_str = "unknown"
+            else:
+                time_str = "unknown"
+                
+            print(f"{i:>2}. {market} ({count} activities, last: {time_str})")
         
         print("=" * 60)
         
@@ -766,17 +797,17 @@ def main():
             return
         
         # Get unique markets
-        market_counts = monitor.get_market_choices(market_filtered)
+        market_data = monitor.get_market_choices(market_filtered)
         
-        if len(market_counts) > 1:
+        if len(market_data) > 1:
             # Multiple markets found - let user choose
-            selected_market = monitor.prompt_market_selection(market_counts)
+            selected_market = monitor.prompt_market_selection(market_data)
             # Update the monitor to use exact matching for the selected market
             monitor.market_filter = selected_market.lower()
             monitor.exact_market = True
-        elif len(market_counts) == 1:
+        elif len(market_data) == 1:
             # Only one market found
-            selected_market = list(market_counts.keys())[0]
+            selected_market = list(market_data.keys())[0]
             print(f"\n✅ Found single market: {selected_market}")
     
     # Start monitoring
