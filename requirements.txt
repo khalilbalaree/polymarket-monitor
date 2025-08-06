@@ -1,8 +1,25 @@
 # Polymarket Activity Monitor Dependencies
-# Python 3.7+ required
+# Python 3.8+ required
 
 # HTTP requests for API calls
 requests>=2.31.0
+
+# Deep Learning and Machine Learning Dependencies
+torch>=2.0.0
+numpy>=1.21.0
+pandas>=1.5.0
+scikit-learn>=1.3.0
+
+# Visualization
+matplotlib>=3.6.0
+seaborn>=0.12.0
+
+# Data processing
+scipy>=1.9.0
+
+# Optional GPU support (uncomment if using CUDA)
+# torchvision>=0.15.0
+# torchaudio>=2.0.0
 
 # Note: The following are built-in Python modules (no installation required):
 # - json (JSON parsing)
@@ -11,3 +28,5 @@ requests>=2.31.0
 # - os (operating system interface)
 # - datetime (date and time handling)
 # - typing (type hints)
+# - collections (specialized container datatypes)
+# - warnings (warning control)

@@ -22,8 +22,7 @@ class Colors:
     BOLD = '\033[1m'    # Bold text
 
 class PolymarketMonitor:
-    def __init__(self, username: str, user_address: str, log_to_json: bool = False, show_colors: bool = True, market_filter: str = None, exact_market: bool = False, num_activities: int = 200):
-        self.username = username
+    def __init__(self, user_address: str, log_to_json: bool = False, show_colors: bool = True, market_filter: str = None, exact_market: bool = False, num_activities: int = 200):
         self.user_address = user_address
         self.log_to_json = log_to_json
         self.show_colors = show_colors
@@ -554,12 +553,12 @@ class PolymarketMonitor:
     def log_to_file(self, data: Dict) -> None:
         """Log data to JSON file if enabled"""
         if self.log_to_json:
-            with open(f'activities_{self.username}.json', 'a') as f:
+            with open(f'activities_{self.user_address}.json', 'a') as f:
                 f.write(json.dumps(data) + '\n')
 
     def monitor_activity(self, interval: int = 60, stats_only: bool = False, max_activity_lines: int = 20) -> None:
         """Monitor user activities at specified intervals"""
-        print(f"Starting activity monitoring for @{self.username}")
+        # print(f"Starting activity monitoring for @{self.username}")
         print(f"User address: {self.user_address}")
         print(f"Check interval: {interval} seconds")
         print(f"JSON logging: {'Enabled' if self.log_to_json else 'Disabled'}")
@@ -742,7 +741,6 @@ def main():
     args = parser.parse_args()
     
     monitor = PolymarketMonitor(
-        'LondonBridge',  # Default username
         args.address, 
         log_to_json=False,  # Simplified - no JSON logging by default
         show_colors=not args.no_colors,
