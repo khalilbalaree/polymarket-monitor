@@ -43,14 +43,14 @@ A real-time monitoring tool for tracking user activities on Polymarket predictio
 
 Monitor all activities for a wallet address:
 ```bash
-python polymarket_monitor.py --address 0xfb1c3c1ab4fb2d0cbcbb9538c8d4d357dd95963e
+python polymarket_monitor.py --address 0x...
 ```
 
 ### Advanced Options
 
 ```bash
 python polymarket_monitor.py \
-  --address 0xfb1c3c1ab4fb2d0cbcbb9538c8d4d357dd95963e \
+  --address 0x... \
   --interval 30 \
   --market "trump" \
   --max-activity-lines 50 \
