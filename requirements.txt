@@ -1,0 +1,13 @@
+# Polymarket Activity Monitor Dependencies
+# Python 3.7+ required
+
+# HTTP requests for API calls
+requests>=2.31.0
+
+# Note: The following are built-in Python modules (no installation required):
+# - json (JSON parsing)
+# - time (timing and delays)
+# - argparse (command line argument parsing)
+# - os (operating system interface)
+# - datetime (date and time handling)
+# - typing (type hints)
