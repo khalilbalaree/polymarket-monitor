@@ -305,7 +305,10 @@ class PolymarketMonitor:
             
             shares_display = f"{pos['shares']:,.0f}" if pos['shares'] == int(pos['shares']) else f"{pos['shares']:,.2f}"
             
-            lines.append(f"{outcome_color:<15} Shares: {shares_display:>12} | Cost: ${pos['cost']:>8.2f}")
+            # Calculate average price (cost per share)
+            avg_price = pos['cost'] / pos['shares'] if pos['shares'] != 0 else 0
+            
+            lines.append(f"{outcome_color:<15} Shares: {shares_display:>12} | Cost: ${pos['cost']:>8.2f} | Avg: ${avg_price:>6.3f}")
             lines.append(f"{'':15} Price:  ${pos['current_price']:>12.3f} | Value: ${pos['current_value']:>8.2f}")
             lines.append(f"{'':15} P&L: {pnl_color}${pos['pnl']:>+8.2f} ({pos['pnl_pct']:>+6.1f}%){pnl_reset}")
             
