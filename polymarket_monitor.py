@@ -347,9 +347,10 @@ class PolymarketMonitor:
     
     def prompt_market_selection(self, market_counts: Dict[str, int]) -> str:
         """Prompt user to select which market to monitor"""
-        markets = list(market_counts.keys())
+        # Sort markets by activity count (most active first)
+        markets = sorted(market_counts.keys(), key=lambda x: market_counts[x], reverse=True)
         
-        print(f"\n🎯 Found {len(markets)} different markets:")
+        print(f"\n🎯 Found {len(markets)} different markets (ranked by activity):")
         print("=" * 60)
         
         for i, market in enumerate(markets, 1):
@@ -728,7 +729,7 @@ class PolymarketMonitor:
 
 def main():
     parser = argparse.ArgumentParser(description='Monitor Polymarket user activities')
-    parser.add_argument('--address', required=True, help='User wallet address (required)')
+    parser.add_argument('--address', type=str, default='0xfb1c3c1ab4fb2d0cbcbb9538c8d4d357dd95963e', help='User wallet address (required)')
     parser.add_argument('--interval', type=int, default=10, help='Check interval in seconds (default: 10)')
     parser.add_argument('--market', type=str, help='Filter activities by market name (partial match)')  
     parser.add_argument('--no-colors', action='store_true', help='Disable color highlighting')
