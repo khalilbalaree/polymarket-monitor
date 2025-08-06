@@ -244,15 +244,9 @@ class PolymarketMonitor:
                 # Get sell price (what you could sell for)
                 sell_price = self.get_market_price(asset_id, 'sell')
                 
-                if self.debug_mode:
-                    print(f"Asset ...{asset_id[-10:]}: sell_price={sell_price}")
-                
                 # Use sell price if it's a real market price (not fallback)
                 if sell_price != 0.5:
                     current_price = sell_price
-                
-                if self.debug_mode:
-                    print(f"Current price for {outcome.upper()}: {current_price}")
             
             current_value = shares * current_price
             pnl = current_value - cost
@@ -281,11 +275,10 @@ class PolymarketMonitor:
             return ""
         
         lines = []
-        lines.append("\n" + "=" * 70)
-        lines.append("💰 PROFIT & LOSS")
-        lines.append("=" * 70)
+        lines.append("\n💰 P&L SUMMARY")
+        lines.append("─" * 50)
         
-        # Individual positions
+        # Individual positions - compact format
         for outcome, pos in pnl_summary['positions'].items():
             if pos['shares'] == 0:
                 continue
@@ -304,26 +297,12 @@ class PolymarketMonitor:
                     pnl_reset = Colors.RESET
             
             shares_display = f"{pos['shares']:,.0f}" if pos['shares'] == int(pos['shares']) else f"{pos['shares']:,.2f}"
-            
-            # Calculate average price (cost per share)
             avg_price = pos['cost'] / pos['shares'] if pos['shares'] != 0 else 0
             
-            lines.append(f"{outcome_color:<15} Shares: {shares_display:>12} | Cost: ${pos['cost']:>8.2f} | Avg: ${avg_price:>6.3f}")
-            lines.append(f"{'':15} Price:  ${pos['current_price']:>12.3f} | Value: ${pos['current_value']:>8.2f}")
-            lines.append(f"{'':15} P&L: {pnl_color}${pos['pnl']:>+8.2f} ({pos['pnl_pct']:>+6.1f}%){pnl_reset}")
-            
-            # Show asset IDs in debug mode
-            if self.debug_mode and 'asset_ids' in pos and pos['asset_ids']:
-                # Show only last 8 characters of first 2 asset IDs
-                short_assets = [f"...{asset_id[-8:]}" for asset_id in list(pos['asset_ids'])[:2]]
-                asset_info = ', '.join(short_assets)
-                if len(pos['asset_ids']) > 2:
-                    asset_info += f" +{len(pos['asset_ids'])-2} more"
-                lines.append(f"{'':15} Assets: {asset_info}")
-            
-            lines.append("-" * 70)
+            # Single line format: OUTCOME: shares @ avg_price → current_price (P&L)
+            lines.append(f"{outcome_color}: {shares_display} @ ${avg_price:.3f} → ${pos['current_price']:.3f} {pnl_color}({pos['pnl_pct']:+.1f}%){pnl_reset}")
         
-        # Total P&L
+        # Total P&L - compact
         total_pnl_color = ""
         total_pnl_reset = ""
         if self.show_colors:
@@ -334,10 +313,9 @@ class PolymarketMonitor:
                 total_pnl_color = Colors.RED + Colors.BOLD
                 total_pnl_reset = Colors.RESET
         
-        lines.append(f"TOTAL COST:      ${pnl_summary['total_cost']:>10.2f}")
-        lines.append(f"CURRENT VALUE:   ${pnl_summary['total_current_value']:>10.2f}")
-        lines.append(f"TOTAL P&L:  {total_pnl_color}${pnl_summary['total_pnl']:>+10.2f} ({pnl_summary['total_pnl_pct']:>+6.1f}%){total_pnl_reset}")
-        lines.append("=" * 70)
+        lines.append("─" * 50)
+        lines.append(f"Total: ${pnl_summary['total_cost']:,.0f} → ${pnl_summary['total_current_value']:,.0f} {total_pnl_color}({pnl_summary['total_pnl_pct']:+.1f}%){total_pnl_reset}")
+        lines.append("─" * 50)
         
         return "\n".join(lines)
     
@@ -482,62 +460,53 @@ class PolymarketMonitor:
     def get_market_stats_display(self, stats: Dict, market_name: str = None) -> str:
         """Return market statistics as a formatted string"""
         lines = []
-        lines.append("=" * 70)
+        
+        # Compact header
         if market_name:
-            lines.append(f"📊 MARKET STATS: {market_name}")
+            # Truncate long market names
+            display_name = market_name[:60] + "..." if len(market_name) > 60 else market_name
+            lines.append(f"📊 {display_name}")
         else:
             lines.append("📊 MARKET STATS")
-        lines.append("=" * 70)
+        lines.append("─" * 50)
         
         # Calculate total from all outcomes
         total_amount = sum(data['amount'] for data in stats['outcomes'].values())
         
-        lines.append(f"Total Trades: {stats['total_trades']}")
-        lines.append(f"Total Amount: ${total_amount:.2f}")
-        lines.append("-" * 50)
+        # Compact summary line
+        lines.append(f"Trades: {stats['total_trades']} | Volume: ${total_amount:,.0f}")
         
-        # Show all outcomes sorted by amount (descending)
+        # Show outcomes in compact format
         sorted_outcomes = sorted(stats['outcomes'].items(), key=lambda x: x[1]['amount'], reverse=True)
         
         up_down_total = 0
-        up_down_shares_total = 0
         for outcome, data in sorted_outcomes:
             if data['count'] > 0:
                 outcome_display = outcome.upper() if outcome else "UNKNOWN"
                 outcome_color = self.colorize_outcome(outcome_display) if self.show_colors else outcome_display
                 
-                # Format shares display (show as integer if whole number, otherwise 2 decimals)
-                shares = data.get('shares', 0)
-                shares_display = f"{shares:,.0f}" if shares == int(shares) else f"{shares:,.2f}"
-                
-                lines.append(f"{outcome_color:<15} Trades: {data['count']:>3} | Amount: ${data['amount']:>10.2f} | Shares: {shares_display:>12}")
+                # Compact format: OUTCOME: count trades, $amount
+                lines.append(f"{outcome_color}: {data['count']} trades, ${data['amount']:,.0f}")
                 
                 # Track up/down for ratio calculation
                 if outcome.lower() in ['up', 'down']:
                     up_down_total += data['amount']
-                    up_down_shares_total += shares
         
-        # Show UP/DOWN ratio if both exist
+        # Show UP/DOWN ratios if both exist (trade count and volume)
         if stats['up_trades'] > 0 and stats['down_trades'] > 0 and up_down_total > 0:
-            lines.append("-" * 70)
-            up_pct = (stats['up_amount'] / up_down_total) * 100
-            down_pct = (stats['down_amount'] / up_down_total) * 100
+            # Trade ratio (by count)
+            total_trades = stats['up_trades'] + stats['down_trades']
+            up_trade_pct = (stats['up_trades'] / total_trades) * 100
+            down_trade_pct = (stats['down_trades'] / total_trades) * 100
             
-            up_shares_pct = (stats['up_shares'] / up_down_shares_total) * 100 if up_down_shares_total > 0 else 0
-            down_shares_pct = (stats['down_shares'] / up_down_shares_total) * 100 if up_down_shares_total > 0 else 0
+            # Volume ratio (by amount)
+            up_vol_pct = (stats['up_amount'] / up_down_total) * 100
+            down_vol_pct = (stats['down_amount'] / up_down_total) * 100
             
-            lines.append(f"UP/DOWN Trading Ratio: {up_pct:.1f}% / {down_pct:.1f}% (by amount)")
-            lines.append(f"UP/DOWN Shares Ratio:  {up_shares_pct:.1f}% / {down_shares_pct:.1f}% (by shares)")
-            lines.append(f"UP/DOWN Volume: ${up_down_total:.2f} (out of ${total_amount:.2f} total)")
-            
-            # Show share totals with proper formatting
-            up_shares_display = f"{stats['up_shares']:,.0f}" if stats['up_shares'] == int(stats['up_shares']) else f"{stats['up_shares']:,.2f}"
-            down_shares_display = f"{stats['down_shares']:,.0f}" if stats['down_shares'] == int(stats['down_shares']) else f"{stats['down_shares']:,.2f}"
-            total_shares_display = f"{up_down_shares_total:,.0f}" if up_down_shares_total == int(up_down_shares_total) else f"{up_down_shares_total:,.2f}"
-            
-            lines.append(f"UP/DOWN Shares: {up_shares_display} / {down_shares_display} (total: {total_shares_display})")
+            lines.append(f"Trade Ratio: {up_trade_pct:.0f}% UP / {down_trade_pct:.0f}% DOWN")
+            lines.append(f"Volume Ratio: {up_vol_pct:.0f}% UP / {down_vol_pct:.0f}% DOWN")
         
-        lines.append("=" * 70)
+        lines.append("─" * 50)
         
         # Add debug info if enabled and available
         if self.debug_mode and stats.get('debug_info'):
