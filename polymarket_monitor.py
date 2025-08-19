@@ -645,6 +645,12 @@ class PolymarketMonitor:
                             max_tokens_width = max(len(f"{float(p['tokens']):,.0f}" if float(p['tokens']) == int(float(p['tokens'])) else f"{float(p['tokens']):,.2f}") for p in parsed_activities)
                             max_cash_width = max(len(f"{float(p['cash']):,.2f}") for p in parsed_activities)
                             
+                            # Calculate market name width if no market filter is applied
+                            max_market_width = 0
+                            if not self.market_filter:
+                                max_market_width = max(len(p.get('market', '')[:40]) for p in parsed_activities)  # Limit to 40 chars
+                                max_market_width = max(max_market_width, 10)  # Minimum width
+                            
                             # Set minimum widths for better alignment
                             max_type_width = max(max_type_width, 5)
                             max_side_width = max(max_side_width, 3)
@@ -660,12 +666,18 @@ class PolymarketMonitor:
                                 price = float(parsed['price'])
                                 cash_display = f"${float(parsed['cash']):,.2f}"
                                 
+                                # Format market name if no filter is applied
+                                market_display = ""
+                                if not self.market_filter and max_market_width > 0:
+                                    market_text = parsed.get('market', '')[:40]  # Truncate to 40 chars
+                                    market_display = f" │ {market_text:<{max_market_width}}"
+                                
                                 # Handle MERGE activities differently (no side/outcome)
                                 if parsed['type'] == 'MERGE':
                                     # For MERGE, use empty strings with proper spacing
                                     side_display = ""
                                     outcome_display = ""
-                                    activity_line = f"[{parsed['timestamp'][11:19]}] {parsed['type']:<{max_type_width}} {side_display:<{max_side_width}} {outcome_display:<{max_outcome_width}} │ {tokens_display:>{max_tokens_width}} shares @ ${price:.3f} │ {cash_display:>12}"
+                                    activity_line = f"[{parsed['timestamp'][11:19]}] {parsed['type']:<{max_type_width}} {side_display:<{max_side_width}} {outcome_display:<{max_outcome_width}} │ {tokens_display:>{max_tokens_width}} shares @ ${price:.3f} │ {cash_display:>12}{market_display}"
                                 else:
                                     # For regular trades, use colors but calculate spacing based on original text
                                     side_text = parsed['side']
@@ -677,7 +689,7 @@ class PolymarketMonitor:
                                     side_padding = max_side_width - len(side_text)
                                     outcome_padding = max_outcome_width - len(outcome_text)
                                     
-                                    activity_line = f"[{parsed['timestamp'][11:19]}] {parsed['type']:<{max_type_width}} {colored_side}{' ' * side_padding} {colored_outcome}{' ' * outcome_padding} │ {tokens_display:>{max_tokens_width}} shares @ ${price:.3f} │ {cash_display:>12}"
+                                    activity_line = f"[{parsed['timestamp'][11:19]}] {parsed['type']:<{max_type_width}} {colored_side}{' ' * side_padding} {colored_outcome}{' ' * outcome_padding} │ {tokens_display:>{max_tokens_width}} shares @ ${price:.3f} │ {cash_display:>12}{market_display}"
                                 
                                 # Check for duplicates using transaction hash
                                 tx_hash = parsed.get('transaction_hash', '')
