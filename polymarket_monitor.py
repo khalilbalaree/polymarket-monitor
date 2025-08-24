@@ -76,8 +76,6 @@ class PolymarketMonitor:
         
         activities = []
         try:
-            print(f"Fetching activities for user: {user_address}")
-            
             # API endpoint for user activities
             url = f"{self.api_base}/activity"
             params = {
@@ -92,7 +90,6 @@ class PolymarketMonitor:
             if response.status_code == 200:
                 data = response.json()
                 activities = data if isinstance(data, list) else data.get('data', [])
-                print(f"✓ Found {len(activities)} activities from API")
             else:
                 print(f"✗ API request failed: {response.status_code}")
                 if response.text:
@@ -185,10 +182,13 @@ class PolymarketMonitor:
     
     def calculate_position_value(self, activities: List[Dict]) -> Dict:
         """Calculate user's current position value and profit/loss"""
-        positions = {}  # outcome -> {'shares': float, 'cost': float, 'asset_ids': set}
+        positions = {}  # outcome -> {'shares': float, 'cost_basis': float, 'total_bought': float, 'total_sold': float, 'realized_pnl': float}
         
-        # Calculate net positions and collect asset IDs
-        for activity in activities:
+        # Sort activities by timestamp to process chronologically
+        sorted_activities = sorted(activities, key=lambda x: x.get('timestamp', ''), reverse=False)
+        
+        # Calculate net positions and track realized P&L
+        for activity in sorted_activities:
             outcome = activity.get('outcome', '').strip().lower()
             if not outcome:
                 continue
@@ -203,7 +203,10 @@ class PolymarketMonitor:
             if outcome not in positions:
                 positions[outcome] = {
                     'shares': 0.0, 
-                    'cost': 0.0, 
+                    'cost_basis': 0.0,
+                    'total_bought': 0.0,
+                    'total_sold': 0.0,
+                    'realized_pnl': 0.0,
                     'asset_ids': set(),
                     'condition_id': condition_id,
                     'outcome_index': outcome_index
@@ -214,59 +217,110 @@ class PolymarketMonitor:
                 positions[outcome]['asset_ids'].add(asset_id)
             
             if side == 'BUY':
+                # Add to position
                 positions[outcome]['shares'] += shares
-                positions[outcome]['cost'] += cost
+                positions[outcome]['cost_basis'] += cost
+                positions[outcome]['total_bought'] += cost
             elif side == 'SELL':
-                positions[outcome]['shares'] -= shares
-                positions[outcome]['cost'] -= cost
+                # Calculate realized P&L for this sale
+                if positions[outcome]['shares'] > 0:
+                    # Calculate average cost per share of current position
+                    avg_cost_per_share = positions[outcome]['cost_basis'] / positions[outcome]['shares']
+                    # Cost basis of shares being sold
+                    cost_of_sold_shares = shares * avg_cost_per_share
+                    # Realized P&L = sale proceeds - cost of sold shares
+                    realized_pnl = cost - cost_of_sold_shares
+                    positions[outcome]['realized_pnl'] += realized_pnl
+                    
+                    # Reduce position
+                    positions[outcome]['shares'] -= shares
+                    positions[outcome]['cost_basis'] -= cost_of_sold_shares
+                    positions[outcome]['total_sold'] += cost
+                    
+                    # Handle floating point precision - if position is very small, round to zero
+                    if abs(positions[outcome]['shares']) < 0.001:
+                        positions[outcome]['shares'] = 0.0
+                    if abs(positions[outcome]['cost_basis']) < 0.01:
+                        positions[outcome]['cost_basis'] = 0.0
+                else:
+                    # Short selling or selling more than we own
+                    positions[outcome]['shares'] -= shares
+                    positions[outcome]['cost_basis'] -= cost  # Negative cost basis for short position
+                    positions[outcome]['total_sold'] += cost
         
         # Calculate current values and P&L
+        total_realized_pnl = sum(pos['realized_pnl'] for pos in positions.values())
+        total_invested = sum(pos['total_bought'] for pos in positions.values())
+        total_sold = sum(pos['total_sold'] for pos in positions.values())
+        
         pnl_summary = {
             'total_cost': 0.0,
             'total_current_value': 0.0,
             'total_pnl': 0.0,
+            'realized_pnl': total_realized_pnl,
+            'total_invested': total_invested,
+            'total_sold': total_sold,
             'positions': {}
         }
         
         for outcome, position in positions.items():
-            if position['shares'] == 0:
+            shares = position['shares']
+            cost_basis = position['cost_basis']
+            
+            # Skip positions with zero or near-zero shares and no realized P&L
+            if abs(shares) < 0.01 and abs(position['realized_pnl']) < 0.01:
                 continue
                 
-            cost = position['cost']
-            shares = position['shares']
             current_price = 0.5  # Default fallback
             
-            # Get current market price (use sell price)
-            asset_ids = position['asset_ids']
-            if asset_ids:
-                asset_id = list(asset_ids)[0]
-                # Get sell price (what you could sell for)
-                sell_price = self.get_market_price(asset_id, 'sell')
-                
-                # Use sell price if it's a real market price (not fallback)
-                if sell_price != 0.5:
-                    current_price = sell_price
+            # Get current market price (use sell price) for open positions
+            if abs(shares) > 0.01:
+                asset_ids = position['asset_ids']
+                if asset_ids:
+                    asset_id = list(asset_ids)[0]
+                    # Get sell price (what you could sell for)
+                    sell_price = self.get_market_price(asset_id, 'sell')
+                    
+                    # Use sell price if it's a real market price (not fallback)
+                    if sell_price != 0.5:
+                        current_price = sell_price
             
             current_value = shares * current_price
-            pnl = current_value - cost
+            unrealized_pnl = current_value - cost_basis
+            total_pnl = unrealized_pnl + position['realized_pnl']
+            
+            # Calculate average cost per share for display
+            avg_cost_per_share = 0
+            if abs(shares) > 0.01:
+                avg_cost_per_share = cost_basis / shares
+            elif position['total_bought'] > 0:
+                # For closed positions, show the average cost of all shares bought
+                total_shares_bought = position['total_bought'] / (position['total_bought'] / max(position['total_bought'], 0.01))  # Rough estimate
+                avg_cost_per_share = position['total_bought'] / max(total_shares_bought, 0.01)
             
             pnl_summary['positions'][outcome] = {
                 'shares': shares,
-                'cost': cost,
+                'cost_basis': cost_basis,
+                'avg_cost_per_share': avg_cost_per_share,
                 'current_price': current_price,
                 'current_value': current_value,
-                'pnl': pnl,
-                'pnl_pct': (pnl / abs(cost) * 100) if cost != 0 else 0,
-                'asset_ids': list(asset_ids)  # For debugging
+                'unrealized_pnl': unrealized_pnl,
+                'realized_pnl': position['realized_pnl'],
+                'total_pnl': total_pnl,
+                'pnl_pct': (total_pnl / max(abs(cost_basis), 0.01) * 100) if cost_basis != 0 else 0,
+                'asset_ids': list(position['asset_ids'])  # For debugging
             }
             
-            pnl_summary['total_cost'] += cost
+            pnl_summary['total_cost'] += cost_basis
             pnl_summary['total_current_value'] += current_value
         
-        pnl_summary['total_pnl'] = pnl_summary['total_current_value'] - pnl_summary['total_cost']
-        pnl_summary['total_pnl_pct'] = (pnl_summary['total_pnl'] / abs(pnl_summary['total_cost']) * 100) if pnl_summary['total_cost'] != 0 else 0
+        # Total P&L includes both unrealized (from current positions) and realized (from sales)
+        unrealized_pnl = pnl_summary['total_current_value'] - pnl_summary['total_cost']
+        pnl_summary['total_pnl'] = unrealized_pnl + total_realized_pnl
+        pnl_summary['total_pnl_pct'] = (pnl_summary['total_pnl'] / total_invested * 100) if total_invested > 0 else 0
         
         return pnl_summary
+
     
     def get_pnl_display(self, pnl_summary: Dict) -> str:
         """Format P&L information for display"""
@@ -279,27 +333,39 @@ class PolymarketMonitor:
         
         # Individual positions - compact format
         for outcome, pos in pnl_summary['positions'].items():
-            if pos['shares'] == 0:
-                continue
-                
             outcome_display = outcome.upper()
             outcome_color = self.colorize_outcome(outcome_display) if self.show_colors else outcome_display
+            
+            # Show both realized and unrealized P&L
+            total_pnl = pos['total_pnl']
+            realized_pnl = pos['realized_pnl']
+            unrealized_pnl = pos['unrealized_pnl']
             
             pnl_color = ""
             pnl_reset = ""
             if self.show_colors:
-                if pos['pnl'] > 0:
+                if total_pnl > 0:
                     pnl_color = Colors.GREEN
                     pnl_reset = Colors.RESET
-                elif pos['pnl'] < 0:
+                elif total_pnl < 0:
                     pnl_color = Colors.RED
                     pnl_reset = Colors.RESET
             
-            shares_display = f"{pos['shares']:,.0f}" if pos['shares'] == int(pos['shares']) else f"{pos['shares']:,.2f}"
-            avg_price = pos['cost'] / pos['shares'] if pos['shares'] != 0 else 0
-            
-            # Single line format: OUTCOME: shares @ avg_price → current_price (P&L)
-            lines.append(f"{outcome_color}: {shares_display} @ ${avg_price:.3f} → ${pos['current_price']:.3f} {pnl_color}({pos['pnl_pct']:+.1f}%){pnl_reset}")
+            # Show current position if any
+            if abs(pos['shares']) >= 0.01:
+                shares_display = f"{pos['shares']:,.0f}" if pos['shares'] == int(pos['shares']) else f"{pos['shares']:,.2f}"
+                avg_price = pos['avg_cost_per_share']
+                
+                # Format: OUTCOME: shares @ avg_price → current_price (Total P&L%)
+                lines.append(f"{outcome_color}: {shares_display} @ ${avg_price:.3f} → ${pos['current_price']:.3f} {pnl_color}({pos['pnl_pct']:+.1f}%){pnl_reset}")
+                
+                # Show breakdown if both realized and unrealized exist
+                if abs(realized_pnl) >= 0.01 and abs(unrealized_pnl) >= 0.01:
+                    lines.append(f"  └─ Realized: ${realized_pnl:+.2f} | Unrealized: ${unrealized_pnl:+.2f}")
+            else:
+                # Closed position - show only realized P&L
+                if abs(realized_pnl) >= 0.01:
+                    lines.append(f"{outcome_color}: CLOSED {pnl_color}${realized_pnl:+.2f} ({pos['pnl_pct']:+.1f}%){pnl_reset}")
         
         # Total P&L - compact
         total_pnl_color = ""
@@ -313,7 +379,26 @@ class PolymarketMonitor:
                 total_pnl_reset = Colors.RESET
         
         lines.append("─" * 50)
-        lines.append(f"Total: ${pnl_summary['total_cost']:,.0f} → ${pnl_summary['total_current_value']:,.0f} {total_pnl_color}({pnl_summary['total_pnl_pct']:+.1f}%){total_pnl_reset}")
+        
+        # Show summary of total investment, current value, and P&L
+        total_invested = pnl_summary.get('total_invested', 0)
+        total_sold = pnl_summary.get('total_sold', 0)  # Cash received from sales
+        current_positions_value = pnl_summary['total_current_value']  # Current value of open positions
+        
+        # Net investment = money put in - money taken out
+        net_investment = total_invested - total_sold
+        
+        # Total current value = current position value + cash from sales
+        total_current_value = current_positions_value + total_sold
+        
+        lines.append(f"Invested: ${total_invested:,.0f} | Sold: ${total_sold:,.0f} | Net: ${net_investment:,.0f}")
+        lines.append(f"Current Value: ${total_current_value:,.0f} {total_pnl_color}({pnl_summary['total_pnl_pct']:+.1f}%){total_pnl_reset}")
+        
+        # Show breakdown of realized vs unrealized if significant
+        if abs(pnl_summary.get('realized_pnl', 0)) >= 0.01:
+            unrealized_total = pnl_summary['total_current_value'] - pnl_summary['total_cost']
+            lines.append(f"P&L: ${pnl_summary['realized_pnl']:+.2f} realized + ${unrealized_total:+.2f} unrealized = ${pnl_summary['total_pnl']:+.2f}")
+        
         lines.append("─" * 50)
         
         return "\n".join(lines)
@@ -432,25 +517,27 @@ class PolymarketMonitor:
             
             cash = float(activity.get('usdcSize', 0))
             shares = float(activity.get('size', 0))
+            side = activity.get('side', '').upper()
             
-            # Count by outcome and sum amounts
+            # Count by outcome and sum amounts (only BUY trades for both count and volume)
             if outcome not in stats['outcomes']:
                 stats['outcomes'][outcome] = {'count': 0, 'amount': 0.0, 'shares': 0.0}
             
-            stats['outcomes'][outcome]['count'] += 1
-            stats['outcomes'][outcome]['amount'] += cash
-            stats['outcomes'][outcome]['shares'] += shares
+            if side == 'BUY':  # Only count BUY trades for both count and volume
+                stats['outcomes'][outcome]['count'] += 1
+                stats['outcomes'][outcome]['amount'] += cash
+                stats['outcomes'][outcome]['shares'] += shares
             
             # Also track Up/Down specifically
-            if outcome == 'up':
+            if outcome == 'up' and side == 'BUY':  # Only count BUY trades
                 stats['up_trades'] += 1
                 stats['up_amount'] += cash
                 stats['up_shares'] += shares
-            elif outcome == 'down':
+            elif outcome == 'down' and side == 'BUY':  # Only count BUY trades
                 stats['down_trades'] += 1
                 stats['down_amount'] += cash
                 stats['down_shares'] += shares
-            else:
+            elif side == 'BUY':  # Other outcomes, only BUY trades
                 stats['other_trades'] += 1
                 stats['other_amount'] += cash
         
@@ -571,167 +658,217 @@ class PolymarketMonitor:
         
         activity_log = []  # Keep track of recent activities
         seen_tx_hashes = set()  # Track transaction hashes to prevent duplicates
+        first_run = True  # Track if this is the first run
         
         while True:
             try:
-                # Clear screen for refresh
-                self.clear_screen()
-                
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                
                 # Get activities
                 all_activities = self.fetch_activities()
                 
                 # Filter by market if specified
                 market_filtered = self.filter_by_market(all_activities)
                 
-                # Use all activities for consistent results
-                # Note: new_only filtering is designed for continuous monitoring, 
-                # but causes inconsistent results when restarting the program
-                activities = market_filtered
+                # Check for new activities only
+                new_activities = self.filter_new_activities(market_filtered)
                 
-                # Show market stats at top if filtering by specific market
-                if self.market_filter and market_filtered:
-                    # Get the most common market name from filtered activities
-                    market_titles = {}
-                    for activity in market_filtered:
-                        title = activity.get('title', '')
-                        if title:
-                            market_titles[title] = market_titles.get(title, 0) + 1
+                # Only refresh display if there are new activities or it's the first run
+                if new_activities or first_run:
+                    # Clear screen for refresh
+                    self.clear_screen()
                     
-                    if market_titles:
-                        # Use the most frequent market title for exact stats
-                        most_common_market = max(market_titles, key=market_titles.get)
-                        exact_market_activities = self.get_exact_market_activities(market_filtered, most_common_market)
-                        
-                        if exact_market_activities:
-                            stats = self.calculate_market_stats(exact_market_activities)
-                            stats_display = self.get_market_stats_display(stats, most_common_market)
-                            print(stats_display)
-                            
-                            # Calculate and show P&L
-                            pnl_summary = self.calculate_position_value(exact_market_activities)
-                            pnl_display = self.get_pnl_display(pnl_summary)
-                            if pnl_display:
-                                print(pnl_display)
-                            
-                            # Show how many different markets were found if more than one
-                            if len(market_titles) > 1:
-                                print(f"📝 Note: Found {len(market_titles)} different markets matching '{self.market_filter}'. Stats shown for: {most_common_market}")
-                            print()  # Add spacing
+                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    
+                    # Use all market-filtered activities for display (not just new ones)
+                    activities = market_filtered
                 
-                # Show activity feed
-                print(f"🔄 ACTIVITY FEED - Last updated: {timestamp}")
-                print("=" * 70)
-                
-                if not stats_only:
-                    # Add new activities to log
-                    if activities:
-                        print(f"📝 Processing {len(activities)} activities from API...")
-                        added_count = 0
+                    # Show market stats at top if filtering by specific market
+                    if self.market_filter and market_filtered:
+                        # Get the most common market name from filtered activities
+                        market_titles = {}
+                        for activity in market_filtered:
+                            title = activity.get('title', '')
+                            if title:
+                                market_titles[title] = market_titles.get(title, 0) + 1
                         
-                        # Calculate dynamic column widths
-                        parsed_activities = []
-                        for activity in activities:
-                            parsed = self.parse_activity(activity)
-                            if parsed:
-                                parsed_activities.append(parsed)
-                        
-                        if parsed_activities:
-                            # Calculate max widths (account for display text, not colored text)
-                            max_type_width = max(len(p['type']) for p in parsed_activities)
-                            max_side_width = max(len(p.get('side', '')) for p in parsed_activities)
-                            max_outcome_width = max(len(p.get('outcome', '')) for p in parsed_activities)
-                            max_tokens_width = max(len(f"{float(p['tokens']):,.0f}" if float(p['tokens']) == int(float(p['tokens'])) else f"{float(p['tokens']):,.2f}") for p in parsed_activities)
-                            max_cash_width = max(len(f"{float(p['cash']):,.2f}") for p in parsed_activities)
+                        if market_titles:
+                            # Use the most frequent market title for exact stats
+                            most_common_market = max(market_titles, key=market_titles.get)
+                            exact_market_activities = self.get_exact_market_activities(market_filtered, most_common_market)
                             
-                            # Calculate market name width if no market filter is applied
-                            max_market_width = 0
-                            if not self.market_filter:
-                                max_market_width = max(len(p.get('market', '')[:40]) for p in parsed_activities)  # Limit to 40 chars
-                                max_market_width = max(max_market_width, 10)  # Minimum width
-                            
-                            # Set minimum widths for better alignment
-                            max_type_width = max(max_type_width, 5)
-                            max_side_width = max(max_side_width, 3)
-                            max_outcome_width = max(max_outcome_width, 4)
-                            max_tokens_width = max(max_tokens_width, 8)
-                            max_cash_width = max(max_cash_width, 10)
-                            
-                            # Process activities with dynamic alignment
-                            for parsed in parsed_activities:
-                                # Format quantities and price
-                                tokens = float(parsed['tokens'])
-                                tokens_display = f"{tokens:,.0f}" if tokens == int(tokens) else f"{tokens:,.2f}"
-                                price = float(parsed['price'])
-                                cash_display = f"${float(parsed['cash']):,.2f}"
+                            if exact_market_activities:
+                                stats = self.calculate_market_stats(exact_market_activities)
+                                stats_display = self.get_market_stats_display(stats, most_common_market)
+                                print(stats_display)
                                 
-                                # Format market name if no filter is applied
-                                market_display = ""
-                                if not self.market_filter and max_market_width > 0:
-                                    market_text = parsed.get('market', '')[:40]  # Truncate to 40 chars
-                                    market_display = f" │ {market_text:<{max_market_width}}"
+                                # Calculate and show P&L
+                                pnl_summary = self.calculate_position_value(exact_market_activities)
+                                pnl_display = self.get_pnl_display(pnl_summary)
+                                if pnl_display:
+                                    print(pnl_display)
                                 
-                                # Handle MERGE activities differently (no side/outcome)
-                                if parsed['type'] == 'MERGE':
-                                    # For MERGE, use empty strings with proper spacing
-                                    side_display = ""
-                                    outcome_display = ""
-                                    activity_line = f"[{parsed['timestamp'][11:19]}] {parsed['type']:<{max_type_width}} {side_display:<{max_side_width}} {outcome_display:<{max_outcome_width}} │ {tokens_display:>{max_tokens_width}} shares @ ${price:.3f} │ {cash_display:>12}{market_display}"
-                                else:
-                                    # For regular trades, use colors but calculate spacing based on original text
-                                    side_text = parsed['side']
-                                    outcome_text = parsed['outcome']
-                                    colored_side = self.colorize_side(side_text)
-                                    colored_outcome = self.colorize_outcome(outcome_text)
+                                # Show how many different markets were found if more than one
+                                if len(market_titles) > 1:
+                                    print(f"📝 Note: Found {len(market_titles)} different markets matching '{self.market_filter}'. Stats shown for: {most_common_market}")
+                                print()  # Add spacing
+                    
+                    # Show activity feed
+                    print(f"🔄 ACTIVITY FEED - Last updated: {timestamp}")
+                    print("=" * 70)
+                    
+                    if not stats_only:
+                        # Add new activities to log
+                        if activities:
+                            print(f"📝 Processing {len(activities)} activities from API...")
+                            added_count = 0
+                            
+                            # Calculate dynamic column widths
+                            parsed_activities = []
+                            for activity in activities:
+                                parsed = self.parse_activity(activity)
+                                if parsed:
+                                    parsed_activities.append(parsed)
+                            
+                            if parsed_activities:
+                                # Calculate max widths (account for display text, not colored text)
+                                max_type_width = max(len(p['type']) for p in parsed_activities)
+                                max_side_width = max(len(p.get('side', '')) for p in parsed_activities)
+                                max_outcome_width = max(len(p.get('outcome', '')) for p in parsed_activities)
+                                max_tokens_width = max(len(f"{float(p['tokens']):,.0f}" if float(p['tokens']) == int(float(p['tokens'])) else f"{float(p['tokens']):,.2f}") for p in parsed_activities)
+                                max_cash_width = max(len(f"{float(p['cash']):,.2f}") for p in parsed_activities)
+                                
+                                # Calculate market name width if no market filter is applied
+                                max_market_width = 0
+                                if not self.market_filter:
+                                    max_market_width = max(len(p.get('market', '')[:40]) for p in parsed_activities)  # Limit to 40 chars
+                                    max_market_width = max(max_market_width, 10)  # Minimum width
+                                
+                                # Set minimum widths for better alignment
+                                max_type_width = max(max_type_width, 5)
+                                max_side_width = max(max_side_width, 3)
+                                max_outcome_width = max(max_outcome_width, 4)
+                                max_tokens_width = max(max_tokens_width, 8)
+                                max_cash_width = max(max_cash_width, 10)
+                                
+                                # Process activities with dynamic alignment
+                                for parsed in parsed_activities:
+                                    # Format quantities and price
+                                    tokens = float(parsed['tokens'])
+                                    tokens_display = f"{tokens:,.0f}" if tokens == int(tokens) else f"{tokens:,.2f}"
+                                    price = float(parsed['price'])
+                                    cash_display = f"${float(parsed['cash']):,.2f}"
                                     
-                                    # Calculate padding needed (color codes don't count toward display width)
-                                    side_padding = max_side_width - len(side_text)
-                                    outcome_padding = max_outcome_width - len(outcome_text)
+                                    # Format market name if no filter is applied
+                                    market_display = ""
+                                    if not self.market_filter and max_market_width > 0:
+                                        market_text = parsed.get('market', '')[:40]  # Truncate to 40 chars
+                                        market_display = f" │ {market_text:<{max_market_width}}"
                                     
-                                    activity_line = f"[{parsed['timestamp'][11:19]}] {parsed['type']:<{max_type_width}} {colored_side}{' ' * side_padding} {colored_outcome}{' ' * outcome_padding} │ {tokens_display:>{max_tokens_width}} shares @ ${price:.3f} │ {cash_display:>12}{market_display}"
-                                
-                                # Check for duplicates using transaction hash
-                                tx_hash = parsed.get('transaction_hash', '')
+                                    # Handle MERGE activities differently (no side/outcome)
+                                    if parsed['type'] == 'MERGE':
+                                        # For MERGE, use empty strings with proper spacing
+                                        side_display = ""
+                                        outcome_display = ""
+                                        activity_line = f"[{parsed['timestamp'][11:19]}] {parsed['type']:<{max_type_width}} {side_display:<{max_side_width}} {outcome_display:<{max_outcome_width}} │ {tokens_display:>{max_tokens_width}} shares @ ${price:.3f} │ {cash_display:>12}{market_display}"
+                                    else:
+                                        # For regular trades, use colors but calculate spacing based on original text
+                                        side_text = parsed['side']
+                                        outcome_text = parsed['outcome']
+                                        colored_side = self.colorize_side(side_text)
+                                        colored_outcome = self.colorize_outcome(outcome_text)
+                                        
+                                        # Calculate padding needed (color codes don't count toward display width)
+                                        side_padding = max_side_width - len(side_text)
+                                        outcome_padding = max_outcome_width - len(outcome_text)
+                                        
+                                        activity_line = f"[{parsed['timestamp'][11:19]}] {parsed['type']:<{max_type_width}} {colored_side}{' ' * side_padding} {colored_outcome}{' ' * outcome_padding} │ {tokens_display:>{max_tokens_width}} shares @ ${price:.3f} │ {cash_display:>12}{market_display}"
+                                    
+                                    # Check for duplicates using transaction hash
+                                    tx_hash = parsed.get('transaction_hash', '')
 
-                                # Add activity if it has a unique tx_hash or no tx_hash at all
-                                if not tx_hash or tx_hash not in seen_tx_hashes:
-                                    # Store activity with full timestamp for sorting
-                                    activity_log.append((parsed['timestamp'], activity_line))
-                                    if tx_hash:  # Only track non-empty hashes
-                                        seen_tx_hashes.add(tx_hash)
-                                    added_count += 1
-                                # Log to file if enabled
-                                self.log_to_file(parsed)
+                                    # Add activity if it has a unique tx_hash or no tx_hash at all
+                                    if not tx_hash or tx_hash not in seen_tx_hashes:
+                                        # Store activity with full timestamp for sorting
+                                        activity_log.append((parsed['timestamp'], activity_line))
+                                        if tx_hash:  # Only track non-empty hashes
+                                            seen_tx_hashes.add(tx_hash)
+                                        added_count += 1
+                                    # Log to file if enabled
+                                    self.log_to_file(parsed)
+                            
+                            print(f"✅ Added {added_count} activities to display")
                         
-                        print(f"✅ Added {added_count} activities to display")
+                        # Sort activities by full timestamp (most recent first) and trim
+                        activity_log.sort(key=lambda x: x[0], reverse=True)  # Sort by full timestamp
+                        activity_log = activity_log[:max_activity_lines]
+                        
+                        # Display recent activities grouped by market
+                        if activity_log:
+                            # Group activities by market when no market filter is applied
+                            if not self.market_filter:
+                                market_groups = {}
+                                for timestamp, activity_line in activity_log:
+                                    # Extract market name from the activity line
+                                    # Activity line format includes market at the end after the last │
+                                    parts = activity_line.split('│')
+                                    if len(parts) >= 3:
+                                        market_part = parts[-1].strip()
+                                        if market_part:
+                                            market_name = market_part
+                                        else:
+                                            market_name = "Unknown Market"
+                                    else:
+                                        market_name = "Unknown Market"
+                                    
+                                    if market_name not in market_groups:
+                                        market_groups[market_name] = []
+                                    market_groups[market_name].append((timestamp, activity_line))
+                                
+                                # Display activities grouped by market (most recent first)
+                                # Sort markets by their most recent activity timestamp
+                                market_names = sorted(market_groups.keys(), 
+                                                    key=lambda market: max(ts for ts, _ in market_groups[market]), 
+                                                    reverse=True)
+                                for i, market_name in enumerate(market_names):
+                                    if i > 0:
+                                        print("─" * 70)
+                                    print(f"📈 {market_name}")
+                                    print("─" * 70)
+                                    for timestamp, activity_line in market_groups[market_name]:
+                                        # Remove market name from activity line since it's now in the header
+                                        line_parts = activity_line.split('│')
+                                        if len(line_parts) >= 3:
+                                            clean_line = '│'.join(line_parts[:-1])
+                                        else:
+                                            clean_line = activity_line
+                                        print(f"  • {clean_line}")
+                            else:
+                                # When filtering by market, display normally without grouping
+                                for timestamp, activity_line in activity_log:
+                                    print(f"  • {activity_line}")
+                        else:
+                            print("  No activities yet...")
                     
-                    # Sort activities by full timestamp (most recent first) and trim
-                    activity_log.sort(key=lambda x: x[0], reverse=True)  # Sort by full timestamp
-                    activity_log = activity_log[:max_activity_lines]
+                    # Show status
+                    status_parts = []
+                    if activities and not stats_only:
+                        status_parts.append(f"{len(activities)} activities from API")
+                        status_parts.append(f"{len(activity_log)} displayed")
                     
-                    # Display recent activities
-                    if activity_log:
-                        for timestamp, activity_line in activity_log:
-                            print(f"  • {activity_line}")
-                    else:
-                        print("  No activities yet...")
-                
-                # Show status
-                status_parts = []
-                if activities and not stats_only:
-                    status_parts.append(f"{len(activities)} activities from API")
-                    status_parts.append(f"{len(activity_log)} displayed")
-                
-                if market_filtered:
-                    status_parts.append(f"{len(market_filtered)} total in market")
-                
-                if status_parts:
-                    print("-" * 70)
-                    print(f"Status: {' | '.join(status_parts)}")
-                
-                print("=" * 70)
-                print("Press Ctrl+C to stop monitoring...")
+                    if market_filtered:
+                        status_parts.append(f"{len(market_filtered)} total in market")
+                    
+                    if status_parts:
+                        print("-" * 70)
+                        print(f"Status: {' | '.join(status_parts)}")
+                    
+                    print("=" * 70)
+                    print("Press Ctrl+C to stop monitoring...")
+                    
+                    first_run = False  # No longer first run after initial display
+                    
+                else:
+                    # No new activities, don't clear screen or show any message
+                    pass
                 
             except KeyboardInterrupt:
                 print("\nMonitoring stopped by user")
@@ -748,7 +885,7 @@ def main():
     parser.add_argument('--market', type=str, help='Filter activities by market name (partial match)')  
     parser.add_argument('--no-colors', action='store_true', help='Disable color highlighting')
     parser.add_argument('--no-debug', action='store_true', help='Disable debug information')
-    parser.add_argument('--num-activities', type=int, default=200, help='Number of activities to fetch (default: 200)')
+    parser.add_argument('--num-activities', type=int, default=100, help='Number of activities to fetch (default: 100)')
     parser.add_argument('--max-activity-lines', type=int, default=20, help='Maximum activities to show (default: 20)')
     args = parser.parse_args()
     
