@@ -860,8 +860,7 @@ class PolymarketMonitor:
                                                     key=lambda market: max(ts for ts, _ in market_groups[market]), 
                                                     reverse=True)
                                 for i, market_name in enumerate(market_names):
-                                    if i > 0:
-                                        print("─" * 70)
+                                    print("─" * 70)
                                     print(f"📈 {market_name}")
                                     print("─" * 70)
                                     for timestamp, activity_line in market_groups[market_name]:
@@ -909,9 +908,69 @@ class PolymarketMonitor:
             
             time.sleep(interval)
 
+def load_address_book(filename='address_book.json'):
+    """Load address book from JSON file"""
+    try:
+        if os.path.exists(filename):
+            with open(filename, 'r') as f:
+                data = json.load(f)
+                return data.get('addresses', [])
+        else:
+            print(f"Address book not found: {filename}")
+            return []
+    except Exception as e:
+        print(f"Error loading address book: {e}")
+        return []
+
+def prompt_address_selection(addresses):
+    """Prompt user to select an address from the address book"""
+    if not addresses:
+        print("No addresses available in address book")
+        return None
+    
+    print("\n📋 ADDRESS BOOK")
+    print("=" * 60)
+    
+    for i, addr in enumerate(addresses, 1):
+        description = addr.get('description', '')
+        desc_text = f" - {description}" if description else ""
+        print(f"{i:>2}. {addr['name']}{desc_text}")
+        print(f"     {addr['address']}")
+    
+    print("=" * 60)
+    
+    while True:
+        try:
+            choice = input(f"Select address to monitor (1-{len(addresses)}, or 'c' for custom): ").strip().lower()
+            if not choice:
+                continue
+            
+            if choice == 'c' or choice == 'custom':
+                custom_address = input("Enter custom wallet address: ").strip()
+                if custom_address:
+                    return custom_address
+                else:
+                    print("Please enter a valid address")
+                    continue
+            
+            choice_num = int(choice)
+            if 1 <= choice_num <= len(addresses):
+                selected = addresses[choice_num - 1]
+                print(f"\n✅ Selected: {selected['name']}")
+                print(f"Address: {selected['address']}")
+                return selected['address']
+            else:
+                print(f"Please enter a number between 1 and {len(addresses)}, or 'c' for custom")
+                
+        except ValueError:
+            print("Please enter a valid number or 'c' for custom address")
+        except KeyboardInterrupt:
+            print("\nSelection cancelled by user")
+            return None
+
 def main():
     parser = argparse.ArgumentParser(description='Monitor Polymarket user activities')
-    parser.add_argument('--address', type=str, default='0xfb1c3c1ab4fb2d0cbcbb9538c8d4d357dd95963e', help='User wallet address (required)')
+    parser.add_argument('--address', type=str, help='User wallet address (if not provided, will prompt to select from address book)')
     parser.add_argument('--interval', type=int, default=10, help='Check interval in seconds (default: 10)')
     parser.add_argument('--market', type=str, help='Filter activities by market name (partial match)')  
     parser.add_argument('--no-colors', action='store_true', help='Disable color highlighting')
@@ -920,8 +979,22 @@ def main():
     parser.add_argument('--max-activity-lines', type=int, default=20, help='Maximum activities to show (default: 20)')
     args = parser.parse_args()
     
+    # If no address provided, prompt user to select from address book
+    user_address = args.address
+    if not user_address:
+        print("Polymarket Activity Monitor")
+        print("=" * 30)
+        addresses = load_address_book()
+        user_address = prompt_address_selection(addresses)
+        if not user_address:
+            print("No address selected. Exiting.")
+            return
+    else:
+        print("Polymarket Activity Monitor")
+        print("=" * 30)
+    
     monitor = PolymarketMonitor(
-        args.address, 
+        user_address, 
         log_to_json=False,  # Simplified - no JSON logging by default
         show_colors=not args.no_colors,
         market_filter=args.market,
