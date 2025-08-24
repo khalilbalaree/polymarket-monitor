@@ -479,10 +479,14 @@ class PolymarketMonitor:
         """Calculate statistics for activities (Up/Down counts and amounts)"""
         stats = {
             'total_trades': len(activities),
-            'up_trades': 0,
-            'down_trades': 0,
-            'up_amount': 0.0,
-            'down_amount': 0.0,
+            'up_buy_trades': 0,
+            'up_sell_trades': 0,
+            'down_buy_trades': 0,
+            'down_sell_trades': 0,
+            'up_buy_amount': 0.0,
+            'up_sell_amount': 0.0,
+            'down_buy_amount': 0.0,
+            'down_sell_amount': 0.0,
             'up_shares': 0.0,
             'down_shares': 0.0,
             'other_trades': 0,
@@ -519,25 +523,41 @@ class PolymarketMonitor:
             shares = float(activity.get('size', 0))
             side = activity.get('side', '').upper()
             
-            # Count by outcome and sum amounts (only BUY trades for both count and volume)
+            # Count by outcome and side, sum amounts for both BUY and SELL
             if outcome not in stats['outcomes']:
-                stats['outcomes'][outcome] = {'count': 0, 'amount': 0.0, 'shares': 0.0}
+                stats['outcomes'][outcome] = {
+                    'buy_count': 0, 'sell_count': 0,
+                    'buy_amount': 0.0, 'sell_amount': 0.0,
+                    'buy_shares': 0.0, 'sell_shares': 0.0
+                }
             
-            if side == 'BUY':  # Only count BUY trades for both count and volume
-                stats['outcomes'][outcome]['count'] += 1
-                stats['outcomes'][outcome]['amount'] += cash
-                stats['outcomes'][outcome]['shares'] += shares
+            if side == 'BUY':
+                stats['outcomes'][outcome]['buy_count'] += 1
+                stats['outcomes'][outcome]['buy_amount'] += cash
+                stats['outcomes'][outcome]['buy_shares'] += shares
+            elif side == 'SELL':
+                stats['outcomes'][outcome]['sell_count'] += 1
+                stats['outcomes'][outcome]['sell_amount'] += cash
+                stats['outcomes'][outcome]['sell_shares'] += shares
             
             # Also track Up/Down specifically
-            if outcome == 'up' and side == 'BUY':  # Only count BUY trades
-                stats['up_trades'] += 1
-                stats['up_amount'] += cash
-                stats['up_shares'] += shares
-            elif outcome == 'down' and side == 'BUY':  # Only count BUY trades
-                stats['down_trades'] += 1
-                stats['down_amount'] += cash
-                stats['down_shares'] += shares
-            elif side == 'BUY':  # Other outcomes, only BUY trades
+            if outcome == 'up':
+                if side == 'BUY':
+                    stats['up_buy_trades'] += 1
+                    stats['up_buy_amount'] += cash
+                    stats['up_shares'] += shares
+                elif side == 'SELL':
+                    stats['up_sell_trades'] += 1
+                    stats['up_sell_amount'] += cash
+            elif outcome == 'down':
+                if side == 'BUY':
+                    stats['down_buy_trades'] += 1
+                    stats['down_buy_amount'] += cash
+                    stats['down_shares'] += shares
+                elif side == 'SELL':
+                    stats['down_sell_trades'] += 1
+                    stats['down_sell_amount'] += cash
+            elif side == 'BUY':  # Other outcomes, only BUY trades for simplicity
                 stats['other_trades'] += 1
                 stats['other_amount'] += cash
         
@@ -556,41 +576,52 @@ class PolymarketMonitor:
             lines.append("📊 MARKET STATS")
         lines.append("─" * 50)
         
-        # Calculate total from all outcomes
-        total_amount = sum(data['amount'] for data in stats['outcomes'].values())
+        # Calculate total from all outcomes (both buy and sell)
+        total_buy_amount = sum(data['buy_amount'] for data in stats['outcomes'].values())
+        total_sell_amount = sum(data['sell_amount'] for data in stats['outcomes'].values())
+        total_amount = total_buy_amount + total_sell_amount
         
         # Compact summary line
         lines.append(f"Trades: {stats['total_trades']} | Volume: ${total_amount:,.0f}")
         
-        # Show outcomes in compact format
-        sorted_outcomes = sorted(stats['outcomes'].items(), key=lambda x: x[1]['amount'], reverse=True)
+        # Show outcomes in compact format with BUY/SELL breakdown
+        sorted_outcomes = sorted(stats['outcomes'].items(), 
+                               key=lambda x: x[1]['buy_amount'] + x[1]['sell_amount'], 
+                               reverse=True)
         
-        up_down_total = 0
         for outcome, data in sorted_outcomes:
-            if data['count'] > 0:
+            if data['buy_count'] > 0 or data['sell_count'] > 0:
                 outcome_display = outcome.upper() if outcome else "UNKNOWN"
                 outcome_color = self.colorize_outcome(outcome_display) if self.show_colors else outcome_display
                 
-                # Compact format: OUTCOME: count trades, $amount
-                lines.append(f"{outcome_color}: {data['count']} trades, ${data['amount']:,.0f}")
+                # Show BUY and SELL separately
+                buy_info = f"{data['buy_count']} buys ${data['buy_amount']:,.0f}" if data['buy_count'] > 0 else ""
+                sell_info = f"{data['sell_count']} sells ${data['sell_amount']:,.0f}" if data['sell_count'] > 0 else ""
                 
-                # Track up/down for ratio calculation
-                if outcome.lower() in ['up', 'down']:
-                    up_down_total += data['amount']
+                if buy_info and sell_info:
+                    lines.append(f"{outcome_color}: {buy_info}, {sell_info}")
+                elif buy_info:
+                    lines.append(f"{outcome_color}: {buy_info}")
+                elif sell_info:
+                    lines.append(f"{outcome_color}: {sell_info}")
         
-        # Show UP/DOWN ratios if both exist (trade count and volume)
-        if stats['up_trades'] > 0 and stats['down_trades'] > 0 and up_down_total > 0:
-            # Trade ratio (by count)
-            total_trades = stats['up_trades'] + stats['down_trades']
-            up_trade_pct = (stats['up_trades'] / total_trades) * 100
-            down_trade_pct = (stats['down_trades'] / total_trades) * 100
+        # Show UP/DOWN ratios if both exist (buy volume only for position ratios)
+        total_up_buy = stats['up_buy_amount']
+        total_down_buy = stats['down_buy_amount']
+        buy_total = total_up_buy + total_down_buy
+        
+        if stats['up_buy_trades'] > 0 and stats['down_buy_trades'] > 0 and buy_total > 0:
+            # Buy trade ratio (by count)
+            total_buy_trades = stats['up_buy_trades'] + stats['down_buy_trades']
+            up_buy_pct = (stats['up_buy_trades'] / total_buy_trades) * 100
+            down_buy_pct = (stats['down_buy_trades'] / total_buy_trades) * 100
             
-            # Volume ratio (by amount)
-            up_vol_pct = (stats['up_amount'] / up_down_total) * 100
-            down_vol_pct = (stats['down_amount'] / up_down_total) * 100
+            # Buy volume ratio (by amount) 
+            up_buy_vol_pct = (total_up_buy / buy_total) * 100
+            down_buy_vol_pct = (total_down_buy / buy_total) * 100
             
-            lines.append(f"Trade Ratio: {up_trade_pct:.0f}% UP / {down_trade_pct:.0f}% DOWN")
-            lines.append(f"Volume Ratio: {up_vol_pct:.0f}% UP / {down_vol_pct:.0f}% DOWN")
+            lines.append(f"Buy Ratio: {up_buy_pct:.0f}% UP / {down_buy_pct:.0f}% DOWN")
+            lines.append(f"Buy Volume: {up_buy_vol_pct:.0f}% UP / {down_buy_vol_pct:.0f}% DOWN")
         
         lines.append("─" * 50)
         
@@ -768,7 +799,7 @@ class PolymarketMonitor:
                                         # For MERGE, use empty strings with proper spacing
                                         side_display = ""
                                         outcome_display = ""
-                                        activity_line = f"[{parsed['timestamp'][11:19]}] {parsed['type']:<{max_type_width}} {side_display:<{max_side_width}} {outcome_display:<{max_outcome_width}} │ {tokens_display:>{max_tokens_width}} shares @ ${price:.3f} │ {cash_display:>12}{market_display}"
+                                        activity_line = f"[{parsed['timestamp'][11:19]}] {parsed['type']:<{max_type_width}} {side_display:<{max_side_width}} {outcome_display:<{max_outcome_width}} │ {tokens_display:>{max_tokens_width}} shares @ ${price:.3f} │ {cash_display:>10}{market_display}"
                                     else:
                                         # For regular trades, use colors but calculate spacing based on original text
                                         side_text = parsed['side']
@@ -780,7 +811,7 @@ class PolymarketMonitor:
                                         side_padding = max_side_width - len(side_text)
                                         outcome_padding = max_outcome_width - len(outcome_text)
                                         
-                                        activity_line = f"[{parsed['timestamp'][11:19]}] {parsed['type']:<{max_type_width}} {colored_side}{' ' * side_padding} {colored_outcome}{' ' * outcome_padding} │ {tokens_display:>{max_tokens_width}} shares @ ${price:.3f} │ {cash_display:>12}{market_display}"
+                                        activity_line = f"[{parsed['timestamp'][11:19]}] {parsed['type']:<{max_type_width}} {colored_side}{' ' * side_padding} {colored_outcome}{' ' * outcome_padding} │ {tokens_display:>{max_tokens_width}} shares @ ${price:.3f} │ {cash_display:>10}{market_display}"
                                     
                                     # Check for duplicates using transaction hash
                                     tx_hash = parsed.get('transaction_hash', '')
