@@ -9,8 +9,10 @@ import json
 import time
 import argparse
 import os
-from datetime import datetime
+import re
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
+import pytz
 
 # ANSI color codes for terminal output
 class Colors:
@@ -22,13 +24,14 @@ class Colors:
     BOLD = '\033[1m'    # Bold text
 
 class PolymarketMonitor:
-    def __init__(self, user_address: str, log_to_json: bool = False, show_colors: bool = True, market_filter: str = None, exact_market: bool = False, num_activities: int = 200):
+    def __init__(self, user_address: str, log_to_json: bool = False, show_colors: bool = True, market_filter: str = None, exact_market: bool = False, num_activities: int = 200, currently_hourly_only: bool = False):
         self.user_address = user_address
         self.log_to_json = log_to_json
         self.show_colors = show_colors
         self.market_filter = market_filter.lower() if market_filter else None
         self.exact_market = exact_market
         self.num_activities = num_activities
+        self.currently_hourly_only = currently_hourly_only
         self.api_base = "https://data-api.polymarket.com"
         self.session = requests.Session()
         self.session.headers.update({
@@ -43,6 +46,62 @@ class PolymarketMonitor:
         # For now, return the provided address
         # In a real implementation, you'd need to resolve username to wallet address
         return self.user_address
+    
+    def get_current_et_time(self) -> datetime:
+        """Get current time in Eastern Time"""
+        et_tz = pytz.timezone('US/Eastern')
+        return datetime.now(et_tz)
+    
+    def parse_market_time(self, market_title: str) -> Optional[datetime]:
+        """Parse time from market title like 'Bitcoin Up or Down - August 24, 2AM ET'"""
+        # Pattern to match: "Month Day, HourAM/PM ET"
+        pattern = r'(\w+)\s+(\d+),\s*(\d+)(AM|PM)\s*ET'
+        
+        match = re.search(pattern, market_title, re.IGNORECASE)
+        if not match:
+            return None
+            
+        try:
+            month_name, day, hour, am_pm = match.groups()
+            
+            # Convert month name to number
+            month_names = {
+                'january': 1, 'february': 2, 'march': 3, 'april': 4,
+                'may': 5, 'june': 6, 'july': 7, 'august': 8,
+                'september': 9, 'october': 10, 'november': 11, 'december': 12
+            }
+            month = month_names.get(month_name.lower())
+            if not month:
+                return None
+            
+            # Convert to 24-hour format
+            hour = int(hour)
+            if am_pm.upper() == 'PM' and hour != 12:
+                hour += 12
+            elif am_pm.upper() == 'AM' and hour == 12:
+                hour = 0
+            
+            # Create datetime in ET timezone
+            current_et = self.get_current_et_time()
+            et_tz = pytz.timezone('US/Eastern')
+            market_time = et_tz.localize(datetime(current_et.year, month, int(day), hour, 0))
+            
+            return market_time
+            
+        except (ValueError, KeyError):
+            return None
+    
+    def is_current_hourly_market(self, market_title: str) -> bool:
+        """Check if market is for the current hour in ET"""
+        market_time = self.parse_market_time(market_title)
+        if not market_time:
+            return False
+        
+        current_et = self.get_current_et_time()
+        
+        # Check if the market time is within the current hour
+        return (market_time.date() == current_et.date() and 
+                market_time.hour == current_et.hour)
     
     def colorize_outcome(self, outcome: str) -> str:
         """Add color formatting to outcome text"""
@@ -124,8 +183,21 @@ class PolymarketMonitor:
         return new_activities
     
     def filter_by_market(self, activities: List[Dict]) -> List[Dict]:
-        """Filter activities by market name if market_filter is set"""
-        if not self.market_filter or not activities:
+        """Filter activities by market name if market_filter is set, or by current hourly markets if currently_hourly_only is enabled"""
+        if not activities:
+            return activities
+        
+        # If currently_hourly_only is enabled, filter by current hour markets
+        if self.currently_hourly_only:
+            filtered_activities = []
+            for activity in activities:
+                market_title = activity.get('title', '')
+                if self.is_current_hourly_market(market_title):
+                    filtered_activities.append(activity)
+            return filtered_activities
+        
+        # Original market filter logic
+        if not self.market_filter:
             return activities
         
         filtered_activities = []
@@ -682,6 +754,10 @@ class PolymarketMonitor:
         print(f"JSON logging: {'Enabled' if self.log_to_json else 'Disabled'}")
         print(f"Color highlighting: {'Enabled' if self.show_colors else 'Disabled'}")
         print(f"Market filter: {self.market_filter if self.market_filter else 'None'}")
+        print(f"Currently hourly only: {'Enabled' if self.currently_hourly_only else 'Disabled'}")
+        if self.currently_hourly_only:
+            current_et = self.get_current_et_time()
+            print(f"Current ET time: {current_et.strftime('%B %d, %I%p ET')}")
         print(f"Stats only: {'Enabled' if stats_only else 'Disabled'}")
         print("-" * 50)
         print("Press Ctrl+C to stop monitoring...")
@@ -973,6 +1049,7 @@ def main():
     parser.add_argument('--address', type=str, help='User wallet address (if not provided, will prompt to select from address book)')
     parser.add_argument('--interval', type=int, default=10, help='Check interval in seconds (default: 10)')
     parser.add_argument('--market', type=str, help='Filter activities by market name (partial match)')  
+    parser.add_argument('--current-hourly-only', action='store_true', help='Filter to show only markets for the current hour in ET (format: "August 24, 2AM ET")')
     parser.add_argument('--no-colors', action='store_true', help='Disable color highlighting')
     parser.add_argument('--no-debug', action='store_true', help='Disable debug information')
     parser.add_argument('--num-activities', type=int, default=100, help='Number of activities to fetch (default: 100)')
@@ -999,7 +1076,8 @@ def main():
         show_colors=not args.no_colors,
         market_filter=args.market,
         exact_market=False,  # Always use partial matching
-        num_activities=args.num_activities
+        num_activities=args.num_activities,
+        currently_hourly_only=args.current_hourly_only
     )
     monitor.debug_mode = not args.no_debug  # Debug enabled by default
     
